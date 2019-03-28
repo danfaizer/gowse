@@ -53,17 +53,18 @@ func (s *Server) CreateTopic(id string) *Topic {
 		return s.Topics[id]
 	}
 
-	return &Topic{
+	t := &Topic{
 		clients:    make(map[string]*Client),
 		register:   make(chan *websocket.Conn),
 		unregister: make(chan *websocket.Conn),
 	}
+	go t.run()
+
+	return t
 }
 
 // Handler ...
 func Handler(ws *websocket.Conn, t *Topic) {
-	go t.run()
-
 	t.register <- ws
 
 	for {
