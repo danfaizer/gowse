@@ -8,6 +8,12 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+// Server ...
+type Server struct {
+	Topics map[string]*Topic
+	mu     sync.Mutex
+}
+
 // Client ...
 type Client struct {
 	ID        string
@@ -23,6 +29,7 @@ type Message struct {
 
 // Topic ...
 type Topic struct {
+	ID         string
 	clients    map[string]*Client
 	register   chan *websocket.Conn
 	unregister chan *websocket.Conn
@@ -30,8 +37,31 @@ type Topic struct {
 	mu         sync.Mutex
 }
 
-// NewServer ...
-func NewServer(ws *websocket.Conn, t *Topic) {
+// New ...
+func New() *Server {
+	return &Server{
+		Topics: make(map[string]*Topic),
+	}
+}
+
+// CreateTopic ...
+func (s *Server) CreateTopic(id string) *Topic {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Topics[id] != nil {
+		return s.Topics[id]
+	}
+
+	return &Topic{
+		clients:    make(map[string]*Client),
+		register:   make(chan *websocket.Conn),
+		unregister: make(chan *websocket.Conn),
+	}
+}
+
+// Handler ...
+func Handler(ws *websocket.Conn, t *Topic) {
 	go t.run()
 
 	t.register <- ws
@@ -44,16 +74,6 @@ func NewServer(ws *websocket.Conn, t *Topic) {
 			return
 		}
 		t.broadcast <- m
-	}
-}
-
-// CreateTopic returns a new Topic object
-func CreateTopic() *Topic {
-	return &Topic{
-		clients:    make(map[string]*Client),
-		register:   make(chan *websocket.Conn),
-		unregister: make(chan *websocket.Conn),
-		mu:         sync.Mutex{},
 	}
 }
 
