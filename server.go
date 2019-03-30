@@ -1,10 +1,20 @@
 package gowse
 
 import (
+	"fmt"
+	"net/http"
 	"sync"
 
-	"golang.org/x/net/websocket"
+	websocket "github.com/gorilla/websocket"
 )
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 // Server ...
 type Server struct {
@@ -29,9 +39,8 @@ func (s *Server) CreateTopic(id string) *Topic {
 	}
 
 	t := &Topic{
-		clients:    make(map[string]*Client),
-		register:   make(chan *websocket.Conn),
-		unregister: make(chan *websocket.Conn),
+		clients: make(map[string]*Client),
+		quit:    make(chan bool),
 	}
 	go t.run()
 
@@ -39,16 +48,38 @@ func (s *Server) CreateTopic(id string) *Topic {
 }
 
 // TopicHandler ...
-func TopicHandler(ws *websocket.Conn, t *Topic) {
-	t.register <- ws
+func TopicHandler(topic *Topic, w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Println("error upgrading http to websocket connection: ", err)
+		return
+	}
+	// Register client ws connection to t topic
+	client := topic.registerClient(ws)
+	fmt.Printf("client %s connected\n", client.ID)
+
+	// Spawn client reader goroutine
+	// Communication is server -> client, this goroutine will
+	// handle client disconnection
+	go func() {
+		for {
+			if _, _, err := ws.NextReader(); err != nil {
+				topic.unregisterClient(ws)
+				return
+			}
+		}
+	}()
 
 	for {
-		var m Message
-		err := websocket.JSON.Receive(ws, &m)
-		if err != nil {
-			t.unregisterClient(ws)
+		select {
+		case message := <-client.Broadcast:
+			err := websocket.WriteJSON(ws, message)
+			if err != nil {
+				return
+			}
+		case <-client.Quit:
+			fmt.Printf("client %s disconnected\n", client.ID)
 			return
 		}
-		t.broadcast <- m
 	}
 }

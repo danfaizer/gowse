@@ -1,75 +1,71 @@
 package gowse
 
 import (
-	"errors"
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	websocket "github.com/gorilla/websocket"
 )
 
 // Topic ...
 type Topic struct {
-	ID         string
-	clients    map[string]*Client
-	register   chan *websocket.Conn
-	unregister chan *websocket.Conn
-	broadcast  chan Message
-	mu         sync.Mutex
+	ID           string
+	clients      map[string]*Client
+	quit         chan bool
+	broadcasting chan bool
+	mu           sync.Mutex
 }
 
 func (t *Topic) run() {
 	ticker := time.NewTicker(1 * time.Second)
+	defer func() {
+		ticker.Stop()
+		close(t.broadcasting)
+		close(t.quit)
+	}()
 	for {
 		select {
-		case conn := <-t.register:
-			t.registerClient(conn)
-		case conn := <-t.unregister:
-			t.unregisterClient(conn)
+		case <-t.quit:
+			return
 		case <-ticker.C:
 			if len(t.clients) > 0 {
-
-				t.Broadcast(Message{Data: map[string]string{"action": "ping"}})
+				t.Broadcast(Message{Text: "ping"})
 			}
 		}
 	}
 }
 
-func (t *Topic) registerClient(conn *websocket.Conn) {
+func (t *Topic) registerClient(conn *websocket.Conn) *Client {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	client := &Client{
-		ID:        conn.Request().RemoteAddr,
+		ID:        conn.RemoteAddr().String(),
 		Connetion: conn,
-		Broadcast: make(chan Message),
+		Broadcast: make(chan interface{}),
 		Quit:      make(chan bool),
 	}
 
-	t.clients[conn.Request().RemoteAddr] = client
+	t.clients[conn.RemoteAddr().String()] = client
 
-	go client.listen()
+	return client
 }
 
 func (t *Topic) unregisterClient(conn *websocket.Conn) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	c, ok := t.clients[conn.Request().RemoteAddr]
+	c, ok := t.clients[conn.RemoteAddr().String()]
 	if ok {
-		c.Quit <- true
-		delete(t.clients, conn.Request().RemoteAddr)
+		delete(t.clients, c.ID)
+		close(c.Broadcast)
+		close(c.Quit)
 	}
 }
 
 // Broadcast ...
-func (t *Topic) Broadcast(m Message) error {
-	_, err := m.envelop()
-	if err != nil {
-		return errors.New("unprocessable message")
+func (t *Topic) Broadcast(message interface{}) {
+	for _, c := range t.clients {
+		c.Broadcast <- message
 	}
-	for _, client := range t.clients {
-		client.Broadcast <- m
-	}
-	return nil
 }
