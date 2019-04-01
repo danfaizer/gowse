@@ -60,15 +60,19 @@ func TopicHandler(topic *Topic, w http.ResponseWriter, r *http.Request) {
 
 	// Spawn client reader goroutine
 	// Communication is server -> client, this goroutine will
-	// handle client disconnection
+	// handle client disconnection.
 	go func() {
 		for {
+			client.Registration <- true
 			if _, _, err := ws.NextReader(); err != nil {
 				topic.unregisterClient(ws)
 				return
 			}
 		}
 	}()
+	// lock handler initialitaziton until client unregister
+	// goroutine has started.
+	<-client.Registration
 
 	for {
 		select {

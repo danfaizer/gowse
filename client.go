@@ -6,8 +6,9 @@ import (
 
 // Client ...
 type Client struct {
-	ID        string
-	Connetion *websocket.Conn
-	Broadcast chan interface{}
-	Quit      chan bool
+	ID           string
+	Connetion    *websocket.Conn
+	Broadcast    chan interface{}
+	Registration chan bool
+	Quit         chan bool
 }

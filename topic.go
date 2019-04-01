@@ -40,10 +40,11 @@ func (t *Topic) registerClient(conn *websocket.Conn) *Client {
 	defer t.mu.Unlock()
 
 	client := &Client{
-		ID:        conn.RemoteAddr().String(),
-		Connetion: conn,
-		Broadcast: make(chan interface{}),
-		Quit:      make(chan bool),
+		ID:           conn.RemoteAddr().String(),
+		Connetion:    conn,
+		Broadcast:    make(chan interface{}),
+		Quit:         make(chan bool),
+		Registration: make(chan bool),
 	}
 
 	t.clients[conn.RemoteAddr().String()] = client
