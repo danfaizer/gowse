@@ -39,9 +39,10 @@ func (s *Server) CreateTopic(id string) *Topic {
 	}
 
 	t := &Topic{
-		clients: make(map[string]*Client),
-		quit:    make(chan bool),
+		subscriptions: make(map[string]*Subscriber),
+		quit:          make(chan bool),
 	}
+	// Start goroutine that handles Topic connections and message broadcasting
 	go t.run()
 
 	return t
@@ -54,35 +55,35 @@ func TopicHandler(topic *Topic, w http.ResponseWriter, r *http.Request) {
 		fmt.Println("error upgrading http to websocket connection: ", err)
 		return
 	}
-	// Register client ws connection to t topic
-	client := topic.registerClient(ws)
-	fmt.Printf("client %s connected\n", client.ID)
+	// Register subscriber ws connection to t topic
+	subscriber := topic.registerSubscriber(ws)
+	fmt.Printf("subscriber %s connected\n", subscriber.id)
 
-	// Spawn client reader goroutine
-	// Communication is server -> client, this goroutine will
-	// handle client disconnection.
+	// Spawn subscriber reader goroutine
+	// Communication is server -> subscriber, this goroutine will
+	// handle subscriber disconnection.
 	go func() {
 		for {
-			client.Registration <- true
+			subscriber.registration <- true
 			if _, _, err := ws.NextReader(); err != nil {
-				topic.unregisterClient(ws)
+				topic.unsubscribe(ws)
 				return
 			}
 		}
 	}()
-	// lock handler initialitaziton until client unregister
+	// lock handler initialitaziton until subscriber unregister
 	// goroutine has started.
-	<-client.Registration
+	<-subscriber.registration
 
 	for {
 		select {
-		case message := <-client.Broadcast:
+		case message := <-subscriber.broadcast:
 			err := websocket.WriteJSON(ws, message)
 			if err != nil {
-				return
+				fmt.Printf("error broadcasting message: %s\n", err)
 			}
-		case <-client.Quit:
-			fmt.Printf("client %s disconnected\n", client.ID)
+		case <-subscriber.quit:
+			fmt.Printf("subscriber %s disconnected\n", subscriber.id)
 			return
 		}
 	}
