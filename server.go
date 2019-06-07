@@ -1,7 +1,6 @@
 package gowse
 
 import (
-	"fmt"
 	"net/http"
 	"sync"
 
@@ -16,75 +15,58 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Server ...
-type Server struct {
-	Topics map[string]*Topic
-	mu     sync.Mutex
+// Logger defines the shape of the component needed by the gowse server and
+// topics to log info.
+type Logger interface {
+	Printf(format string, v ...interface{})
 }
 
-// New ...
-func New() *Server {
+// Server ...
+type Server struct {
+	Topics   map[string]*Topic
+	mu       sync.Mutex
+	l        Logger
+	topicsWG sync.WaitGroup
+}
+
+// NewServer creates and initializes a Gowse Server. If the logger argument is
+// nil the logs written by the server will be discarded.
+func NewServer(l Logger) *Server {
+	if l == nil {
+		l = voidLogger{}
+	}
 	return &Server{
 		Topics: make(map[string]*Topic),
+		l:      l,
 	}
 }
 
-// CreateTopic ...
+// CreateTopic creates a topic where clients can connect to receive messages.
 func (s *Server) CreateTopic(id string) *Topic {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if s.Topics[id] != nil {
 		return s.Topics[id]
 	}
-
 	t := &Topic{
 		subscriptions: make(map[string]*Subscriber),
-		quit:          make(chan bool),
+		messages:      make(chan interface{}, 1024),
+		wg:            &s.topicsWG,
 	}
-	// Start goroutine that handles Topic connections and message broadcasting
-	go t.run()
-
+	s.topicsWG.Add(1)
+	s.Topics[id] = t
 	return t
 }
 
-// TopicHandler ...
-func TopicHandler(topic *Topic, w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println("error upgrading http to websocket connection: ", err)
-		return
-	}
-	// Register subscriber ws connection to t topic
-	subscriber := topic.registerSubscriber(ws)
-	fmt.Printf("subscriber %s connected\n", subscriber.id)
+// Stops ...
+func (s *Server) Stop() {
+	s.topicsWG.Wait()
+}
 
-	// Spawn subscriber reader goroutine
-	// Communication is server -> subscriber, this goroutine will
-	// handle subscriber disconnection.
-	go func() {
-		for {
-			subscriber.registration <- true
-			if _, _, err := ws.NextReader(); err != nil {
-				topic.unsubscribe(ws)
-				return
-			}
-		}
-	}()
-	// lock handler initialitaziton until subscriber unregister
-	// goroutine has started.
-	<-subscriber.registration
+// voidLogger that does not send the logs to any output.
+type voidLogger struct {
+}
 
-	for {
-		select {
-		case message := <-subscriber.broadcast:
-			err := websocket.WriteJSON(ws, message)
-			if err != nil {
-				fmt.Printf("error broadcasting message: %s\n", err)
-			}
-		case <-subscriber.quit:
-			fmt.Printf("subscriber %s disconnected\n", subscriber.id)
-			return
-		}
-	}
+func (l voidLogger) Printf(format string, v ...interface{}) {
+	return
 }
