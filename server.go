@@ -50,8 +50,9 @@ func (s *Server) CreateTopic(id string) *Topic {
 	}
 	t := &Topic{
 		subscriptions: make(map[string]*Subscriber),
-		messages:      make(chan interface{}, 1024),
-		wg:            &s.topicsWG,
+		messages:      make(chan interface{}, defaultTopicMsgChannelSize),
+
+		wg: &s.topicsWG,
 	}
 	s.topicsWG.Add(1)
 	s.Topics[id] = t
@@ -60,6 +61,7 @@ func (s *Server) CreateTopic(id string) *Topic {
 
 // Stops ...
 func (s *Server) Stop() {
+
 	s.topicsWG.Wait()
 }
 
