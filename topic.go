@@ -5,22 +5,41 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	websocket "github.com/gorilla/websocket"
 )
 
 const (
-	defaultTopicMsgChannelSize  = 256
-	clientOperationsChannelSize = 256
+	defaultTopicMsgChannelSize         = 256
+	clientOperationsChannelSize        = 256
+	subscriberMaxReceiveMessageSeconds = 2
 )
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 // Subscriber ...
 type Subscriber struct {
-	id         string
+	ID         string
 	connection *websocket.Conn
-	wg         *sync.WaitGroup
-	done       chan struct{}
-	cancel     context.CancelFunc
+}
+
+func NewSubscriber(w http.ResponseWriter, r *http.Request, t *Topic) (*Subscriber, error) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error upgrading http to websocket connection: ", err)
+	}
+	subscriber := &Subscriber{
+		ID:         ws.RemoteAddr().String(),
+		connection: ws,
+	}
+	return subscriber, nil
 }
 
 // SendMessage sends a message to the subscriber.
@@ -28,36 +47,25 @@ func (s *Subscriber) SendMessage(msg interface{}) error {
 	return s.connection.WriteJSON(msg)
 }
 
+func (s *Subscriber) Close() {
+	s.connection.Close()
+}
+
 // Monitor detects when a subscriber closed a connection.
-func (s *Subscriber) Monitor() {
+func (s *Subscriber) Monitor(closed chan<- error, wg *sync.WaitGroup) {
 	// Spawn subscriber reader goroutine. Gowse only allows communication server
 	// -> subscriber, thus this goroutine discards all the messages received
-	// from a client, but, it disconnects the client if the call NexReader
+	// from a client, but, it disconnects the client if a call to NexReader
 	// returns and error as that means the client is disconnected.
 	go func() {
-		read := make(chan error)
-		reader := func() {
-			_, _, err := s.connection.NextReader()
-			read <- err
-		}
-		go reader()
 		var err error
-	LOOP:
 		for {
-			select {
-			case err = <-read:
-				if err != nil {
-					break LOOP
-				}
-				go reader()
+			_, _, err = s.connection.NextReader()
+			if err != nil {
 				break
-			case _ = <-s.done:
-				// connection.close will force the next call to the reader function
-				// to return an error so the loop will break ensuring no goroutines are still running.
-				s.connection.Close()
 			}
 		}
-		s.wg.Done()
+		wg.Done()
 	}()
 }
 
@@ -65,82 +73,117 @@ func (s *Subscriber) Monitor() {
 type Topic struct {
 	ID string
 	// TODO the use case for this map could potentially match the one where
-	// sync.Map could improve performance, evaluate using it.
-	subscriptions map[string]*Subscriber
-	mu            sync.RWMutex
-	l             Logger
-	messages      chan interface{}
-	ctx           context.Context
-	wg            *sync.WaitGroup
+	// sync.Map could improve performance.
+	subscriptions    map[string]*Subscriber
+	mu               sync.RWMutex
+	l                Logger
+	messages         chan interface{}
+	addSubscriber    chan *Subscriber
+	removeSubscriber chan *Subscriber
+	ctx              context.Context
 }
 
-func (t *Topic) run() {
-	go t.process()
-	go t.monitor()
+// Process starts the topic to accept new subscribers and to broadcast messages.
+func (t *Topic) Process(wg *sync.WaitGroup) {
+	go t.process(wg)
 }
 
-func (t *Topic) process() {
-	for msg := range t.messages {
+func (t *Topic) process(wg *sync.WaitGroup) {
+	sendMsgWG := new(sync.WaitGroup)
+	monitorSubscribersWG := new(sync.WaitGroup)
+LOOP:
+	for {
+		select {
+		case m := <-t.messages:
+			// Ensure there are no goroutines sending last message.
+			sendMsgWG.Wait()
+			subscribers := t.subscribers()
+			t.sendMsg(subscribers, m, sendMsgWG)
+			break
+		case s := <-t.addSubscriber:
+			// We only add a subscriber if it does not exist.
+			if _, ok := t.subscriptions[s.ID]; !ok {
+				t.subscriptions[s.ID] = s
+				monitorSubscribersWG.Add(1)
+				s.Monitor(monitorSubscribersWG)
+			}
+			break
+		case s := <-t.removeSubscriber:
+			s.Close()
+			delete(t.subscriptions, s.ID)
+			break
+		case <-t.ctx.Done():
+			break LOOP
+		}
+	}
+	// Wait possible messages to be sent.
+	sendMsgWG.Wait()
+	// Before quitting we will try to send the remaining messages to the existing clients.
+	for m := range t.messages {
+		subscribers := t.subscribers()
+		t.sendMsg(subscribers, m, sendMsgWG)
+		sendMsgWG.Wait()
+	}
+	// Close all the connections to force quite all the go routines monitoring subscribers.
+	for _, s := range t.subscriptions {
+		s.Close()
+	}
+	monitorSubscribersWG.Wait()
+	wg.Done()
+}
 
+func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}, wg *sync.WaitGroup) {
+	for _, s := range subscribers {
+		s := s
+		wg.Add(1)
+		go t.sendMsgWithTimeout(s, msg, wg)
 	}
 }
 
-func (t *Topic) monitor() {
- for {
-	 select {
-		 <- t.
-	 }
- }
-}
-
-func (t *Topic) unsubscribe(conn *websocket.Conn) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	id := conn.RemoteAddr().String()
-	delete(t.subscriptions, id)
-}
-
-func (t *Topic) registerSubscriber(conn *websocket.Conn) *Subscriber {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	subscriber := &Subscriber{
-		id:         conn.RemoteAddr().String(),
-		connection: conn,
-		broadcast:  make(chan interface{}),
+func (t *Topic) sendMsgWithTimeout(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
+	send := func(done chan<- struct{}) {
+		err := s.SendMessage(msg)
+		if err != nil {
+			t.l.Printf("error sending message to the client %s:%+v", s.ID, err)
+			// If we were unable to send a message we disconnect the client, to
+			// avoid the possibility of sending out of order messages.
+			s.Close()
+		}
+		done <- struct{}{}
 	}
-
-	t.subscriptions[conn.RemoteAddr().String()] = subscriber
-
-	return subscriber
-}
-
-// sendMessage sends a message to all the current subscribed clients.
-func (t *Topic) sendMessage(m interface{}) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	for _, c := range t.subscriptions {
-
+	done := make(chan struct{})
+	send(done)
+	select {
+	case <-done:
+		break
+	case <-time.After(time.Second * subscriberMaxReceiveMessageSeconds):
+		s.Close()
+		break
 	}
-}
-
-// Broadcast sends a messages to the all the clients subscribed to the topic.
-func (t *Topic) Broadcast(message interface{}) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	for _, c := range t.subscriptions {
-		c.broadcast <- message
-	}
+	wg.Done()
 }
 
 // TopicHandler is called when a new subscriber connects to the topic.
 func (t *Topic) TopicHandler(w http.ResponseWriter, r *http.Request) error {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return fmt.Errorf("error upgrading http to websocket connection: ", err)
+	s, err := NewSubscriber(w, r, t)
+	t.addSubscriber <- s
+	return err
+}
+
+func (t *Topic) subscribers() []*Subscriber {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var subscribers []*Subscriber
+	for _, s := range t.subscriptions {
+		s := s
+		subscribers := append(subscribers, s)
 	}
-	// Register subscriber ws connection to the topic.
-	subscriber := t.registerSubscriber(ws)
-	t.l.Printf("subscriber %s connected\n", subscriber.id)
-	return
+	return subscribers
+}
+
+// Broadcast sends a messages to the all the clients subscribed to the topic.
+// Calling broadcast after canceling the context passed to the server that
+// created the topic caused a panic.
+func (t *Topic) Broadcast(message interface{}) {
+	t.messages <- message
 }

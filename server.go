@@ -1,19 +1,8 @@
 package gowse
 
 import (
-	"net/http"
 	"sync"
-
-	websocket "github.com/gorilla/websocket"
 )
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
 
 // Logger defines the shape of the component needed by the gowse server and
 // topics to log info.
@@ -61,7 +50,6 @@ func (s *Server) CreateTopic(id string) *Topic {
 
 // Stops ...
 func (s *Server) Stop() {
-
 	s.topicsWG.Wait()
 }
 
