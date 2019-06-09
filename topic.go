@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultTopicMsgChannelSize         = 256
-	clientOperationsChannelSize        = 256
+	defaultClientOperationsChannelSize = 100
 	subscriberMaxReceiveMessageSeconds = 2
 )
 
@@ -24,12 +24,14 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Subscriber ...
+// Subscriber represents a client subscribed to a topic.
 type Subscriber struct {
 	ID         string
 	connection *websocket.Conn
 }
 
+// NewSubscriber creates a subscriber by upgrading the http request to a
+// websocket.
 func NewSubscriber(w http.ResponseWriter, r *http.Request, t *Topic) (*Subscriber, error) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -47,6 +49,7 @@ func (s *Subscriber) SendMessage(msg interface{}) error {
 	return s.connection.WriteJSON(msg)
 }
 
+// Close closes the underlaying connection with the subscriber.
 func (s *Subscriber) Close() {
 	s.connection.Close()
 }
@@ -79,6 +82,18 @@ type Topic struct {
 	addSubscriber    chan *Subscriber
 	removeSubscriber chan *Subscriber
 	ctx              context.Context
+}
+
+// NewTopic creates a new topic given and ID, a logger and a context.
+func NewTopic(ctx context.Context, ID string, l Logger) *Topic {
+	t := &Topic{
+		ID:            ID,
+		subscriptions: make(map[string]*Subscriber),
+		l:             l,
+		messages:      make(chan interface{}, defaultTopicMsgChannelSize),
+		addSubscriber: make(chan *Subscriber, defaultClientOperationsChannelSize),
+	}
+	return t
 }
 
 // Process starts the topic to accept new subscribers and to broadcast messages.

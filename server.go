@@ -50,6 +50,7 @@ func (s *Server) CreateTopic(id string) *Topic {
 
 // Stops ...
 func (s *Server) Stop() {
+
 	s.topicsWG.Wait()
 }
 
