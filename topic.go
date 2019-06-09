@@ -52,7 +52,7 @@ func (s *Subscriber) Close() {
 }
 
 // Monitor detects when a subscriber closed a connection.
-func (s *Subscriber) Monitor(closed chan<- error, wg *sync.WaitGroup) {
+func (s *Subscriber) Monitor(closed chan<- *Subscriber) {
 	// Spawn subscriber reader goroutine. Gowse only allows communication server
 	// -> subscriber, thus this goroutine discards all the messages received
 	// from a client, but, it disconnects the client if a call to NexReader
@@ -65,17 +65,15 @@ func (s *Subscriber) Monitor(closed chan<- error, wg *sync.WaitGroup) {
 				break
 			}
 		}
-		wg.Done()
+		closed <- s
 	}()
 }
 
-// Topic ...
+// Topic represents and endpoint where multiple clients can subscribe to receive
+// the broadcasted messages.
 type Topic struct {
-	ID string
-	// TODO the use case for this map could potentially match the one where
-	// sync.Map could improve performance.
+	ID               string
 	subscriptions    map[string]*Subscriber
-	mu               sync.RWMutex
 	l                Logger
 	messages         chan interface{}
 	addSubscriber    chan *Subscriber
@@ -104,12 +102,10 @@ LOOP:
 			// We only add a subscriber if it does not exist.
 			if _, ok := t.subscriptions[s.ID]; !ok {
 				t.subscriptions[s.ID] = s
-				monitorSubscribersWG.Add(1)
-				s.Monitor(monitorSubscribersWG)
+				s.Monitor(t.removeSubscriber)
 			}
 			break
 		case s := <-t.removeSubscriber:
-			s.Close()
 			delete(t.subscriptions, s.ID)
 			break
 		case <-t.ctx.Done():
@@ -124,11 +120,16 @@ LOOP:
 		t.sendMsg(subscribers, m, sendMsgWG)
 		sendMsgWG.Wait()
 	}
-	// Close all the connections to force quite all the go routines monitoring subscribers.
+	// Close all the connections to force quite all the the remaining routines monitoring subscribers.
 	for _, s := range t.subscriptions {
 		s.Close()
 	}
-	monitorSubscribersWG.Wait()
+	// Remove all the remaining subscribers.
+	for len(t.subscriptions) > 0 {
+		s := <-t.removeSubscriber
+		delete(t.subscriptions, s.ID)
+	}
+	// Signal the wg the go routine is done.
 	wg.Done()
 }
 
@@ -171,8 +172,6 @@ func (t *Topic) TopicHandler(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (t *Topic) subscribers() []*Subscriber {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
 	var subscribers []*Subscriber
 	for _, s := range t.subscriptions {
 		s := s
