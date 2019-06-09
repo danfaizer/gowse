@@ -103,7 +103,6 @@ func (t *Topic) Process(wg *sync.WaitGroup) {
 
 func (t *Topic) process(wg *sync.WaitGroup) {
 	sendMsgWG := new(sync.WaitGroup)
-	monitorSubscribersWG := new(sync.WaitGroup)
 LOOP:
 	for {
 		select {
@@ -190,7 +189,7 @@ func (t *Topic) subscribers() []*Subscriber {
 	var subscribers []*Subscriber
 	for _, s := range t.subscriptions {
 		s := s
-		subscribers := append(subscribers, s)
+		subscribers = append(subscribers, s)
 	}
 	return subscribers
 }
