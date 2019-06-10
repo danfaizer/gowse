@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	websocket "github.com/gorilla/websocket"
 )
@@ -12,7 +13,7 @@ import (
 const (
 	defaultTopicMsgChannelSize         = 2
 	defaultClientOperationsChannelSize = 100
-	subscriberMaxReceiveMessageSeconds = 2
+	subscriberSendMessageMaxTime       = 2 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -45,6 +46,7 @@ func NewSubscriber(w http.ResponseWriter, r *http.Request, t *Topic) (*Subscribe
 
 // SendMessage sends a message to the subscriber.
 func (s *Subscriber) SendMessage(msg interface{}) error {
+	s.connection.SetWriteDeadline(time.Now().Add(subscriberSendMessageMaxTime))
 	return s.connection.WriteJSON(msg)
 }
 
