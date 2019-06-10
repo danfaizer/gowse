@@ -11,25 +11,28 @@ type Logger interface {
 	Printf(format string, v ...interface{})
 }
 
-// Server ...
+// Server allows to create topics that clients can subscribe to.
 type Server struct {
-	Topics   map[string]*Topic
-	ctx      context.Context
-	mu       sync.Mutex
-	l        Logger
-	topicsWG sync.WaitGroup
+	Topics    map[string]*Topic
+	ctx       context.Context
+	cancelCtx context.CancelFunc
+	mu        sync.Mutex
+	l         Logger
+	topicsWG  sync.WaitGroup
 }
 
-// NewServer creates and initializes a Gowse Server. If the logger argument is
+// NewServer creates and initializes a gowse Server. If the logger argument is
 // nil the logs written by the server will be discarded.
-func NewServer(ctx context.Context, l Logger) *Server {
+func NewServer(l Logger) *Server {
 	if l == nil {
 		l = voidLogger{}
 	}
+	ctx, cancelCtx := context.WithCancel(context.Background())
 	return &Server{
-		Topics: make(map[string]*Topic),
-		l:      l,
-		ctx:    ctx,
+		Topics:    make(map[string]*Topic),
+		l:         l,
+		ctx:       ctx,
+		cancelCtx: cancelCtx,
 	}
 }
 
@@ -48,10 +51,10 @@ func (s *Server) CreateTopic(ID string) *Topic {
 	return t
 }
 
-// WaitFinished blocks the calling go routine until all the topics are finished Before
-// calling Finish the server must be signaled to finish by caneling the the
-// context used to create it.
-func (s *Server) WaitFinished() {
+// Stop signals all the topics created by the server to finish and blocks the
+// calling goroutine until all the Topics have finished.
+func (s *Server) Stop() {
+	s.cancelCtx()
 	s.topicsWG.Wait()
 }
 

@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"time"
 
 	websocket "github.com/gorilla/websocket"
 )
 
 const (
-	defaultTopicMsgChannelSize         = 256
+	defaultTopicMsgChannelSize         = 2
 	defaultClientOperationsChannelSize = 100
 	subscriberMaxReceiveMessageSeconds = 2
 )
@@ -87,12 +86,13 @@ type Topic struct {
 // NewTopic creates a new topic given and ID, a logger and a context.
 func NewTopic(ctx context.Context, ID string, l Logger) *Topic {
 	t := &Topic{
-		ID:            ID,
-		subscriptions: make(map[string]*Subscriber),
-		l:             l,
-		messages:      make(chan interface{}, defaultTopicMsgChannelSize),
-		addSubscriber: make(chan *Subscriber, defaultClientOperationsChannelSize),
-		ctx:           ctx,
+		ID:               ID,
+		subscriptions:    make(map[string]*Subscriber),
+		l:                l,
+		messages:         make(chan interface{}, defaultTopicMsgChannelSize),
+		addSubscriber:    make(chan *Subscriber, defaultClientOperationsChannelSize),
+		removeSubscriber: make(chan *Subscriber, defaultClientOperationsChannelSize),
+		ctx:              ctx,
 	}
 	return t
 }
@@ -103,14 +103,13 @@ func (t *Topic) Process(wg *sync.WaitGroup) {
 }
 
 func (t *Topic) process(wg *sync.WaitGroup) {
-	sendMsgWG := new(sync.WaitGroup)
 LOOP:
 	for {
 		select {
 		case m := <-t.messages:
 			// Ensure there are no goroutines sending last message.
 			subscribers := t.subscribers()
-			t.sendMsg(subscribers, m, sendMsgWG)
+			t.sendMsg(subscribers, m)
 			break
 		case s := <-t.addSubscriber:
 			// We only add a subscriber if it does not exist.
@@ -120,20 +119,18 @@ LOOP:
 			}
 			break
 		case s := <-t.removeSubscriber:
+			s.Close()
 			delete(t.subscriptions, s.ID)
 			break
 		case <-t.ctx.Done():
 			break LOOP
 		}
 	}
-	// Wait for possible outgoing messages.
-	sendMsgWG.Wait()
 	close(t.messages)
 	// Before quitting we will try to send the remaining messages to the existing clients.
 	for m := range t.messages {
 		subscribers := t.subscribers()
-		t.sendMsg(subscribers, m, sendMsgWG)
-		sendMsgWG.Wait()
+		t.sendMsg(subscribers, m)
 	}
 	// Close all the connections to force quite all the the remaining routines monitoring subscribers.
 	for _, s := range t.subscriptions {
@@ -148,17 +145,17 @@ LOOP:
 	wg.Done()
 }
 
-func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}, wg *sync.WaitGroup) {
+func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}) {
+	var wg sync.WaitGroup
 	for _, s := range subscribers {
 		s := s
 		wg.Add(1)
-		go t.sendMsgWithTimeout(s, msg, wg)
+		go t.sendMsgToSubscriber(s, msg, &wg)
 	}
 	wg.Wait()
 }
 
-func (t *Topic) sendMsgWithTimeout(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
-	s.connection.SetWriteDeadline(time.Now().Add(time.Second * subscriberMaxReceiveMessageSeconds))
+func (t *Topic) sendMsgToSubscriber(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
 	err := s.SendMessage(msg)
 	if err != nil {
 		t.l.Printf("error sending message to the client %s:%+v", s.ID, err)
@@ -170,8 +167,11 @@ func (t *Topic) sendMsgWithTimeout(s *Subscriber, msg interface{}, wg *sync.Wait
 // TopicHandler is called when a new subscriber connects to the topic.
 func (t *Topic) TopicHandler(w http.ResponseWriter, r *http.Request) error {
 	s, err := NewSubscriber(w, r, t)
+	if err != nil {
+		return err
+	}
 	t.addSubscriber <- s
-	return err
+	return nil
 }
 
 func (t *Topic) subscribers() []*Subscriber {
