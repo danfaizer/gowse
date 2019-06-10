@@ -29,6 +29,7 @@ func NewServer(ctx context.Context, l Logger) *Server {
 	return &Server{
 		Topics: make(map[string]*Topic),
 		l:      l,
+		ctx:    ctx,
 	}
 }
 

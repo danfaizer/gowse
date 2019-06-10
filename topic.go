@@ -92,6 +92,7 @@ func NewTopic(ctx context.Context, ID string, l Logger) *Topic {
 		l:             l,
 		messages:      make(chan interface{}, defaultTopicMsgChannelSize),
 		addSubscriber: make(chan *Subscriber, defaultClientOperationsChannelSize),
+		ctx:           ctx,
 	}
 	return t
 }
@@ -108,7 +109,6 @@ LOOP:
 		select {
 		case m := <-t.messages:
 			// Ensure there are no goroutines sending last message.
-			sendMsgWG.Wait()
 			subscribers := t.subscribers()
 			t.sendMsg(subscribers, m, sendMsgWG)
 			break
@@ -126,8 +126,9 @@ LOOP:
 			break LOOP
 		}
 	}
-	// Wait possible messages to be sent.
+	// Wait for possible outgoing messages.
 	sendMsgWG.Wait()
+	close(t.messages)
 	// Before quitting we will try to send the remaining messages to the existing clients.
 	for m := range t.messages {
 		subscribers := t.subscribers()
@@ -153,27 +154,15 @@ func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}, wg *sync.Wai
 		wg.Add(1)
 		go t.sendMsgWithTimeout(s, msg, wg)
 	}
+	wg.Wait()
 }
 
 func (t *Topic) sendMsgWithTimeout(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
-	send := func(done chan<- struct{}) {
-		err := s.SendMessage(msg)
-		if err != nil {
-			t.l.Printf("error sending message to the client %s:%+v", s.ID, err)
-			// If we were unable to send a message we disconnect the client, to
-			// avoid the possibility of sending out of order messages.
-			s.Close()
-		}
-		done <- struct{}{}
-	}
-	done := make(chan struct{})
-	send(done)
-	select {
-	case <-done:
-		break
-	case <-time.After(time.Second * subscriberMaxReceiveMessageSeconds):
+	s.connection.SetWriteDeadline(time.Now().Add(time.Second * subscriberMaxReceiveMessageSeconds))
+	err := s.SendMessage(msg)
+	if err != nil {
+		t.l.Printf("error sending message to the client %s:%+v", s.ID, err)
 		s.Close()
-		break
 	}
 	wg.Done()
 }
