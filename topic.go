@@ -148,6 +148,9 @@ LOOP:
 }
 
 func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}) {
+	// We create a goroutine per subscriber to send the message, so if a a very
+	// big number of clients is connected we could potentially start having
+	// problems with the memory pressure.
 	var wg sync.WaitGroup
 	for _, s := range subscribers {
 		s := s
