@@ -109,7 +109,6 @@ LOOP:
 	for {
 		select {
 		case m := <-t.messages:
-			// Ensure there are no goroutines sending last message.
 			subscribers := t.subscribers()
 			t.sendMsg(subscribers, m)
 			break
