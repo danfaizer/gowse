@@ -6,9 +6,10 @@ import (
 )
 
 // Logger defines the shape of the component needed by the gowse server and
-// topics to log info.
+// topics to log info and errors.
 type Logger interface {
-	Printf(format string, v ...interface{})
+	Infof(format string, v ...interface{})
+	Error(format string, v ...interface{})
 }
 
 // Server allows to create topics that clients can subscribe to.
@@ -52,7 +53,10 @@ func (s *Server) CreateTopic(ID string) *Topic {
 }
 
 // Stop signals all the topics created by the server to finish and blocks the
-// calling goroutine until all the Topics have finished.
+// calling goroutine until all the Topics have finished. The caller must ensure
+// all the calls to topic.TopicHandler had completed and no futher calls to that
+// method will be made. That usually means the http server receiving the client
+// subscritions has already been stopped.
 func (s *Server) Stop() {
 	s.cancelCtx()
 	s.topicsWG.Wait()
@@ -62,6 +66,6 @@ func (s *Server) Stop() {
 type voidLogger struct {
 }
 
-func (l voidLogger) Printf(format string, v ...interface{}) {
-	return
-}
+func (l voidLogger) Infof(format string, v ...interface{}) {}
+
+func (l voidLogger) Error(format string, v ...interface{}) {}

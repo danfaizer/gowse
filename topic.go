@@ -82,6 +82,7 @@ type Topic struct {
 	messages         chan interface{}
 	addSubscriber    chan *Subscriber
 	removeSubscriber chan *Subscriber
+	closed           chan *struct{}
 	ctx              context.Context
 }
 
@@ -102,6 +103,28 @@ func NewTopic(ctx context.Context, ID string, l Logger) *Topic {
 // Process starts the topic to accept new subscribers and to broadcast messages.
 func (t *Topic) Process(wg *sync.WaitGroup) {
 	go t.process(wg)
+}
+
+func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}) {
+	// We create a goroutine per subscriber to send the message, so if a a very
+	// big number of clients is connected we could potentially start having
+	// problems with the memory pressure.
+	var wg sync.WaitGroup
+	for _, s := range subscribers {
+		s := s
+		wg.Add(1)
+		go t.sendMsgToSubscriber(s, msg, &wg)
+	}
+	wg.Wait()
+}
+
+func (t *Topic) sendMsgToSubscriber(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
+	err := s.SendMessage(msg)
+	if err != nil {
+		t.l.Error("error sending message to the client %s:%+v", s.ID, err)
+		s.Close()
+	}
+	wg.Done()
 }
 
 func (t *Topic) process(wg *sync.WaitGroup) {
@@ -133,7 +156,8 @@ LOOP:
 		subscribers := t.subscribers()
 		t.sendMsg(subscribers, m)
 	}
-	// Close all the connections to force quite all the the remaining routines monitoring subscribers.
+	// Close all the connections to force quite all the the remaining routines
+	// monitoring subscribers.
 	for _, s := range t.subscriptions {
 		s.Close()
 	}
@@ -146,30 +170,8 @@ LOOP:
 	wg.Done()
 }
 
-func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}) {
-	// We create a goroutine per subscriber to send the message, so if a a very
-	// big number of clients is connected we could potentially start having
-	// problems with the memory pressure.
-	var wg sync.WaitGroup
-	for _, s := range subscribers {
-		s := s
-		wg.Add(1)
-		go t.sendMsgToSubscriber(s, msg, &wg)
-	}
-	wg.Wait()
-}
-
-func (t *Topic) sendMsgToSubscriber(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
-	err := s.SendMessage(msg)
-	if err != nil {
-		t.l.Printf("error sending message to the client %s:%+v", s.ID, err)
-		s.Close()
-	}
-	wg.Done()
-}
-
-// TopicHandler is called when a new subscriber connects to the topic.
-func (t *Topic) TopicHandler(w http.ResponseWriter, r *http.Request) error {
+// SubscriberHandler is called when a new subscriber connects to the topic.
+func (t *Topic) SubscriberHandler(w http.ResponseWriter, r *http.Request) error {
 	s, err := NewSubscriber(w, r, t)
 	if err != nil {
 		return err
