@@ -140,11 +140,13 @@ LOOP:
 			if _, ok := t.subscriptions[s.ID]; !ok {
 				t.subscriptions[s.ID] = s
 				s.Monitor(t.removeSubscriber)
+				t.l.Infof("client %+v connected\n", s.ID)
 			}
 			break
 		case s := <-t.removeSubscriber:
 			s.Close()
 			delete(t.subscriptions, s.ID)
+			t.l.Infof("client %+v disconneted\n", s.ID)
 			break
 		case <-t.ctx.Done():
 			break LOOP
@@ -172,6 +174,7 @@ LOOP:
 	for len(t.subscriptions) > 0 {
 		s := <-t.removeSubscriber
 		delete(t.subscriptions, s.ID)
+		t.l.Infof("client %+v disconneted\n", s.ID)
 	}
 	// Close the channel used to remove subscribers.
 	close(t.removeSubscriber)
