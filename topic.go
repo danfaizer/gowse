@@ -150,8 +150,15 @@ LOOP:
 			break LOOP
 		}
 	}
-	close(t.messages)
+
+	// Closing the channel to subscribe new clients will cause any goroutine that is
+	// still calling the subscriberHandler method to panic.
+	close(t.addSubscriber)
+
 	// Before quitting we will try to send the remaining messages to the existing clients.
+	// If any goroutine is still calling the Broadcast method closing this channel will cause
+	// it to panic.
+	close(t.messages)
 	for m := range t.messages {
 		subscribers := t.subscribers()
 		t.sendMsg(subscribers, m)
@@ -166,6 +173,8 @@ LOOP:
 		s := <-t.removeSubscriber
 		delete(t.subscriptions, s.ID)
 	}
+	// Close the channel used to remove subscribers.
+	close(t.removeSubscriber)
 	// Signal the wg the go routine is done.
 	wg.Done()
 }
@@ -191,7 +200,7 @@ func (t *Topic) subscribers() []*Subscriber {
 
 // Broadcast sends a messages to the all the clients subscribed to the topic.
 // Calling broadcast after canceling the context passed to the server that
-// created the topic caused a panic.
+// created the topic causes panic.
 func (t *Topic) Broadcast(message interface{}) {
 	t.messages <- message
 }
