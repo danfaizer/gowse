@@ -121,7 +121,7 @@ func (t *Topic) sendMsg(subscribers []*Subscriber, msg interface{}) {
 func (t *Topic) sendMsgToSubscriber(s *Subscriber, msg interface{}, wg *sync.WaitGroup) {
 	err := s.SendMessage(msg)
 	if err != nil {
-		t.l.Error("error sending message to the client %s:%+v", s.ID, err)
+		t.l.Errorf("error sending message to the client %s:%+v", s.ID, err)
 		s.Close()
 	}
 	wg.Done()

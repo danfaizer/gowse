@@ -9,7 +9,7 @@ import (
 // topics to log info and errors.
 type Logger interface {
 	Infof(format string, v ...interface{})
-	Error(format string, v ...interface{})
+	Errorf(format string, v ...interface{})
 }
 
 // Server allows to create topics that clients can subscribe to.
@@ -68,4 +68,4 @@ type voidLogger struct {
 
 func (l voidLogger) Infof(format string, v ...interface{}) {}
 
-func (l voidLogger) Error(format string, v ...interface{}) {}
+func (l voidLogger) Errorf(format string, v ...interface{}) {}
